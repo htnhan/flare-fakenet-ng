@@ -160,6 +160,14 @@ class Fakenet():
                 from diverters.linux import Diverter
                 self.diverter = Diverter(self.diverter_config, self.listeners_config, ip_addrs, self.logging_level)
 
+            # experimental darwin support
+            elif platform_name.lower().startswith('darwin'):
+                from diverters.darwin import make_diverter
+                self.diverter = make_diverter(self.diverter_config, self.listeners_config, self.logging_level)
+                if self.diverter is None:
+                    self.logger.critical('Failed to initialize diverter')
+                    sys.exit(1)
+                
             else:
                 self.logger.error('Error: Your system %s is currently not supported.', platform_name)
                 sys.exit(1)
@@ -184,9 +192,8 @@ class Fakenet():
                 self.logger.error("%s" % e)
 
             else:
-
-                listener_provider_instance = listener_provider(
-                        listener_config, listener_name, self.logging_level)
+                # Listener provider object
+                listener_provider_instance = listener_provider(listener_config, listener_name, self.logging_level)
 
                 # Store listener provider object
                 self.running_listener_providers.append(listener_provider_instance)
@@ -197,25 +204,10 @@ class Fakenet():
                     self.logger.error('Error starting %s listener:', listener_config['listener'])
                     self.logger.error(" %s" % e)
 
+
         # Start the diverter
         if self.diverter:
             self.diverter.start()
-
-        for listener in self.running_listener_providers:
-
-            # Only listeners that implement acceptListeners(listeners) 
-            # interface receive running_listener_providers
-            try:
-                listener.acceptListeners(self.running_listener_providers)
-            except AttributeError:
-                self.logger.debug("acceptListeners() not implemented by Listener %s" % listener.name)
-
-            # Only listeners that implement acceptDiverter(diverter) 
-            # interface receive diverter
-            try:
-                listener.acceptDiverter(self.diverter)
-            except AttributeError:
-                self.logger.debug("acceptDiverter() not implemented by Listener %s" % listener.name)
 
     def stop(self):
 
@@ -272,7 +264,7 @@ def main():
  | | / ____ \| . \| |____| |\  | |____   | |      | |\  | |__| |
  |_|/_/    \_\_|\_\______|_| \_|______|  |_|      |_| \_|\_____|
 
-                         Version  1.3
+                         Version  1.1
   _____________________________________________________________
                          Developed by            
              Peter Kacherginsky and Michael Bailey      

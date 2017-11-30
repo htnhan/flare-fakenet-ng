@@ -1,0 +1,10 @@
+netifaces
+dnslib
+pyftpdlib
+pydivert
+dpkt
+pyopenssl
+expiringdict
+pcapy
+scapy
+pydumbnet
