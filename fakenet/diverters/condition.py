@@ -32,7 +32,8 @@ def make_forwarder_conditions(listeners_config, is_divert, logger=None, ):
             logger.error(_err)
             return None
 
-        blprocs = lconfig.get(KEY_PROCESS_BLACKLIST, '').split()
+        blprocs = lconfig.get(KEY_PROCESS_BLACKLIST, '').split(',')
+        blprocs = [_.strip() for _ in blprocs]
         if len(blprocs) > 0:
             # if diverting, the process name is blacklisted/ignored
             pnames_cond = make_procnames_condition(blprocs, logger, is_divert)
@@ -370,7 +371,6 @@ class ProcessNamesCondition(Condition):
             idstr = self._get_init_id(ip_packet, tport)
             md = dutils.gethash(idstr)
 
-            self.logger.debug('checking: %s: %s' % (idstr, md))
             if self.connecting.get(md, False):
                 del self.connecting[md]
                 newid = self._get_session_id(ip_packet, tport)
@@ -416,7 +416,6 @@ class ProcessNamesCondition(Condition):
             if not name in names:
                 self.tcpinitevent.set()
                 return True
-
             pktid = js.get('pktid')
             md = dutils.gethash(pktid)
             if js.get('connecting') is not None:
