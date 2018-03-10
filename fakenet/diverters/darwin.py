@@ -6,17 +6,29 @@ import logging
 import traceback
 import subprocess as sp
 
+from expiringdict import ExpiringDict
+from time import sleep
 from scapy.all import conf
+from diverters import Diverter
 from diverters import utils as dutils
 from diverters.monitor import make_monitor
 
+from diverters.condition import make_forwarder_conditions
+from diverters.condition import IpSrcCondition, DirectionCondition
+from diverters.injector import make_injector
+from diverters.mangler import make_mangler
+from diverters.monitor import LoopbackInterfaceMonitor, InterfaceMonitor
 
 def make_diverter(dconf, lconf, lvl):
-    diverter = Diverter(dconf, lconf, lvl)
+    config = {
+        'listeners_config': lconf,
+        'diverter_config': dconf,
+        'log_level': lvl
+    }
+    diverter = DarwinUserlandDiverter(config)
     if not diverter.initialize():
         return None
     return diverter
-
 
 
 ADDR_LINK_ANY = 'ff:ff:ff:ff:ff:ff'
@@ -26,11 +38,30 @@ MY_IP_FAKE = '192.0.2.124'
 LOOPBACK_IFACE = 'lo0'
 
 
-class Diverter(object):
-    def __init__(self, diverter_config, listeners_config, logging_level):
-        self.diverter_config = diverter_config
-        self.listeners_config = listeners_config
-        self.logging_level = logging_level
+class DarwinDiverter(Diverter):
+    def __init__(self, config):
+        super(DarwinDiverter, self).__init__(config)
+    
+    def initialize(self):
+        if not super(DarwinDiverter, self).initialize():
+            return False
+        
+        self.gw = dutils.get_gateway_info()
+        if self.gw is None:
+            self.logger.error('Failed to get gateway info')
+            return False
+
+        self.iface = dutils.get_iface_info(self.gw.get('iface'))
+        if self.iface is None:
+            self.logger.error('Failed to get public interface info')
+            return False
+
+        return True
+
+
+class DarwinUserlandDiverter(DarwinDiverter):
+    def __init__(self, config):
+        super(DarwinUserlandDiverter, self).__init__(config)
         self.loopback_ip = MY_IP
         self.loopback_ip_fake = MY_IP_FAKE
         self.gw = None
@@ -44,23 +75,14 @@ class Diverter(object):
         self.local_fowarder = None
         self.local_monitor = None
 
-        self.logger = logging.getLogger(self.__class__.__name__)
-        self.logger.setLevel(logging_level)
-
     def initialize(self):
         '''
         Initialize method. This MUST be called right after object
         creation.
         @return True on sucess, False if error occurs
         '''
-        self.gw = dutils.get_gateway_info()
-        if self.gw is None:
-            self.logger.error('Failed to get gateway info')
-            return False
 
-        self.iface = dutils.get_iface_info(self.gw.get('iface'))
-        if self.iface is None:
-            self.logger.error('Failed to get public interface info')
+        if not super(DarwinUserlandDiverter, self).initialize():
             return False
 
         if not self.initialize_public_forwarder():
@@ -92,31 +114,44 @@ class Diverter(object):
         @attention: Sets the self.public_forwarder object
         '''
 
-        listeners_config = {
-            'listeners': self.listeners_config,
-            'ipconf': {
-                'addr.inet': [self.loopback_ip],
-            }
-        }
+        # Step 1: make conditions
+        conditions = list()
+        ipcond = IpSrcCondition({
+            'addr.inet': [self.loopback_ip]
+        })
+        if not ipcond.initialize():
+            return False
+        conditions.append(ipcond)
 
-        mangler_config = {
+        conds = make_forwarder_conditions(
+            self.listeners_config, False, self.logger
+        )
+        if conds is None:
+            return False
+        conditions.append(conds)
+
+        # Step 2: make mangler
+        mangler = make_mangler({
             'type': 'DlinkPacketMangler',
             'dlink.src': self.iface.get('addr.dlink'),
             'dlink.dst': self.gw.get('addr.dlink'),
             'inet.src': self.iface.get('addr.inet'),
-        }
+            'conditions': conditions,
+        })
+        if mangler is None:
+            return False
 
-        injector_config = {'iface': self.iface.get('iface')}
+        forwarder = make_injector({'iface': self.iface.get('iface')})
+        if forwarder is None:
+            return False
 
         # Actually initialize the loopback interface monitor
         monitor_config = {
-            'listeners_config': listeners_config,
-            'mangler_config': mangler_config,
-            'injector_config': injector_config,
+            'conditions': conditions,
+            'mangler': mangler,
+            'forwarder': forwarder,
             'iface': LOOPBACK_IFACE,
-            'is_forwarder': True,
-            'is_divert': False,
-            'is_loopback': True
+            'type': 'LoopbackInterfaceMonitor'
         }
 
         monitor = make_monitor(monitor_config, self.logger)
@@ -136,30 +171,36 @@ class Diverter(object):
         @attention  : Sets the self.public_monitor object
         '''
 
-        # initialize the ignore Conditions
-        listeners_config = {
-            'ipconf': {
-                'addr.inet': self.iface.get('addr.inet'), 'not': True
-            }
-        }
+        ipcond = IpSrcCondition({
+            'addr.inet': self.iface.get('addr.inet'),
+            'not': True,
+        })
+        if not ipcond.initialize():
+            return False
+        conditions = [ipcond]
 
-        mangler_config = {
+        # Step 2: make mangler
+        mangler = make_mangler({
             'type': 'IPMangler',
             'inet.dst': self.loopback_ip,
-        }
+            'conditions': conditions,
+        })
+        if mangler is None:
+            return False
 
-        injector_config = {
+        forwarder = make_injector({
             'iface': LOOPBACK_IFACE,
             'type': 'LoopbackInjector',
-        }
+        })
+        if forwarder is None:
+            return False
 
         monitor_config = {
-            'listeners_config': listeners_config,
-            'mangler_config': mangler_config,
-            'injector_config': injector_config,
+            'conditions': conditions,
+            'mangler': mangler,
+            'forwarder': forwarder,
             'iface': self.iface.get('iface'),
-            'is_forwarder': False,
-            'is_loopback': False
+            'type': 'InterfaceMonitor',
         }
 
         monitor = make_monitor(monitor_config, self.logger)
@@ -179,31 +220,41 @@ class Diverter(object):
         @attention  : Sets the self.local_forwarder object
         '''
 
-        listeners_config = {
-            'listeners': self.listeners_config,
-            'ipconf': {
-                'addr.inet': [self.loopback_ip]
-            }
-        }
+        # Step 1: Make conditions
+        conditions = list()
 
-        mangler_config = {
+        ipcond = IpSrcCondition({'addr.inet': [self.loopback_ip]})
+        if not ipcond.initialize():
+            return False
+        
+        conds = make_forwarder_conditions(
+            self.listeners_config, True, self.logger
+        )
+        if conds is None:
+            return False
+        conditions = [ipcond, conds]
+
+        mangler = make_mangler({
             'type': 'IPSwapMangler',
             'inet.dst': self.loopback_ip_fake,
-        }
+            'conditions': conditions,
+        })
+        if mangler is None:
+            return False
 
-        injector_config = {
+        forwarder = make_injector({
             'iface': LOOPBACK_IFACE,
             'type': 'LoopbackInjector'
-        }
+        })
+        if forwarder is None:
+            return False
 
         monitor_config = {
-            'listeners_config': listeners_config,
-            'mangler_config': mangler_config,
-            'injector_config': injector_config,
+            'conditions': conditions,
+            'mangler': mangler,
+            'forwarder': forwarder,
             'iface': LOOPBACK_IFACE,
-            'is_loopback': True,
-            'is_divert': True,
-            'is_forwarder': True,
+            'type': 'LoopbackInterfaceMonitor',
         }
 
         monitor = make_monitor(monitor_config, self.logger)
@@ -223,34 +274,36 @@ class Diverter(object):
         @return     : True on success, False on failure
         @attention  : Set self.local_monitor object
         '''
-        listeners_config = {
-            'ipconf': {
-                'addr.inet': [self.loopback_ip_fake],
-            }
-        }
+        ipcond = IpSrcCondition({'addr.inet': [self.loopback_ip_fake]})
+        if not ipcond.initialize():
+            return False
+        conditions = [ipcond]
 
-        mangler_config = {
+        mangler = make_mangler({
             'type': 'IPSwapMangler',
             'inet.dst': self.loopback_ip,
-        }
+            'conditions': conditions,
+        })
+        if mangler is None:
+            return False
 
-        injector_config = {
+        forwarder = make_injector({
             'iface': LOOPBACK_IFACE,
             'type': 'LoopbackInjector',
-        }
+        })
+        if forwarder is None:
+            return False
 
         monitor_config = {
-            'listeners_config': listeners_config,
-            'mangler_config': mangler_config,
-            'injector_config': injector_config,
+            'conditions': conditions,
+            'mangler': mangler,
+            'forwarder': forwarder,
             'iface': LOOPBACK_IFACE,
-            'is_forwarder': False,
-            'is_loopback': True
+            'type': 'LoopbackInterfaceMonitor',
         }
 
         monitor = make_monitor(monitor_config, self.logger)
         if monitor is None:
-            self.logger.error('Failed to make monitor')
             return False
         self.local_monitor = monitor
         return True
