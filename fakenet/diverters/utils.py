@@ -86,3 +86,18 @@ def get_gateway_info():
     except:
         return None
     return {'iface': gwif, 'addr.inet': gwip, 'addr.dlink': gwmac}
+
+def gen_endpoint_key(tport, ip, port):
+    return '%s://%s:%s' % (str(tport), str(ip), str(port))
+
+def gen_endpoint_key_from_ippacket_src(ip_packet):
+    tport = tport_from_ippacket(ip_packet)
+    if tport is None:
+        return None
+    return gen_endpoint_key(tport.name, ip_packet.src, tport.sport)
+
+def gen_endpoint_key_from_ippacket_dst(ip_packet):
+    tport = tport_from_ippacket(ip_packet)
+    if tport is None:
+        return None
+    return gen_endpoint_key(tport.name, ip_packet.dst, tport.dport)
