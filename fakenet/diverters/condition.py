@@ -469,8 +469,8 @@ class ResolvedProcessNamesCondition(Condition):
             return False
         
         rc = name in self.names
-        return rc if self.negate else not rc
-
+        return rc if not self.negate else not rc
+        
 class DirectionCondition(Condition):
     def initialize(self):
         self.direction = self.config.get('direction', 'in')

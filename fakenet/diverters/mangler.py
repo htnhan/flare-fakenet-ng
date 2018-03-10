@@ -1,4 +1,4 @@
-from diverters import BaseObject
+from diverters import BaseObject, utils as dutils
 from scapy.all import TCP, UDP, IP, Ether
 
 
@@ -8,6 +8,8 @@ def make_mangler(config):
         'IPMangler': IPMangler,
         'IPSwapMangler': IPSwapMangler,
         'DlinkPacketMangler': DlinkPacketMangler,
+        'SrcIpFwdMangler': SrcIpFwdMangler,
+        'DstIpFwdMangler': DstIpFwdMangler,
     }
     _type = config.get('type', None)
 
@@ -82,7 +84,11 @@ class TPortMangler(Mangler):
 
     def mangle_udp(self, ip_packet):
         '''NOTE: Can we avoid the copy for better performance?'''
-        return str(UDP(str(ip_packet[UDP])))
+        otport = ip_packet[UDP]
+        ntport = UDP(
+            sport=otport.sport, dport=otport.dport,
+        )/otport.payload
+        return ntport
 
 
 class IPMangler(TPortMangler):
@@ -157,3 +163,55 @@ class DlinkPacketMangler(IPMangler):
         nipkt = super(DlinkPacketMangler, self).do_mangle(ip_packet)
         dlink = Ether(src=macsrc, dst=macdst)/nipkt
         return dlink
+
+class IpForwardMangler(TPortMangler):
+    '''
+    This class implements NAT and Reverse NAT mangling. Supported configuration:
+    {
+        'inet.dst'      :   New destination IP address
+        'inet.src'      :   New source IP address
+    }
+    This is a subclass of TPortMangler. All options supported by
+    TPortMangler are also supported.
+    '''
+
+    def __init__(self, config):
+        super(IpForwardMangler, self).__init__(config)
+        self._tbl = None
+
+    def initialize(self):
+        if not super(IpForwardMangler, self).initialize():
+            return False
+        
+        self._tbl = self.config.get('ip_forward_table', None)
+        if self._tbl is None:
+            self.logger.error('Failed! ip_forward_table is required')
+            return False
+        return True
+
+    
+class SrcIpFwdMangler(IpForwardMangler):    
+    def do_mangle(self, ip_packet):
+        tport = super(SrcIpFwdMangler, self).do_mangle(ip_packet)
+        if tport is None:
+            return None
+
+        dendpoint = dutils.gen_endpoint_key_from_ippacket_dst(ip_packet)
+        new_src = self._tbl.get(dendpoint, ip_packet.src)
+        ipkt = IP(id=ip_packet.id, flags=ip_packet.flags,
+                  frag=ip_packet.frag, src=new_src, dst=ip_packet.dst)/tport
+        return ipkt
+
+
+class DstIpFwdMangler(IpForwardMangler):    
+    def do_mangle(self, ip_packet):
+        tport = super(DstIpFwdMangler, self).do_mangle(ip_packet)
+        if tport is None:
+            return None
+
+        sendpoint = dutils.gen_endpoint_key_from_ippacket_src(ip_packet)
+        new_dst = self.config.get('inet.dst', ip_packet.dst)
+        self._tbl[sendpoint] = ip_packet.dst
+        ipkt = IP(id=ip_packet.id, flags=ip_packet.flags,
+                  frag=ip_packet.frag, src=ip_packet.src, dst=new_dst)/tport
+        return ipkt        

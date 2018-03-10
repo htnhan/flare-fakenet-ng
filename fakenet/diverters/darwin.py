@@ -19,13 +19,20 @@ from diverters.injector import make_injector
 from diverters.mangler import make_mangler
 from diverters.monitor import LoopbackInterfaceMonitor, InterfaceMonitor
 
-def make_diverter(dconf, lconf, lvl):
+def make_diverter(dconf, lconf, lvl, mtype='DarwinUserlandDiverter'):
+# def make_diverter(dconf, lconf, lvl, mtype='DarwinKextDiverter'):
     config = {
         'listeners_config': lconf,
         'diverter_config': dconf,
         'log_level': lvl
     }
-    diverter = DarwinUserlandDiverter(config)
+    if mtype == 'DarwinUserlandDiverter':
+        ctor = DarwinUserlandDiverter
+    elif mtype == 'DarwinKextDiverter':
+        ctor = DarwinKextDiverter
+    else:
+        return None
+    diverter = ctor(config)
     if not diverter.initialize():
         return None
     return diverter
@@ -466,3 +473,70 @@ class DarwinUserlandDiverter(DarwinDiverter):
             self.logger.debug(">>> Stack:\n%s" % (stk,))
             return False
         return True
+
+
+class DarwinKextDiverter(DarwinDiverter):
+    CACHE_MAX_LEN = 0xff
+    CACHE_MAX_AGE = 0x10    # seconds
+
+    def __init__(self, config):
+        super(DarwinKextDiverter, self).__init__(config)
+        self.monitor = None
+        self.ip_fwd_tbl = ExpiringDict(self.CACHE_MAX_LEN, self.CACHE_MAX_AGE)
+    
+    def initialize(self):
+        if not super(DarwinKextDiverter, self).initialize():
+            return False
+        
+        conds = make_forwarder_conditions(
+            self.listeners_config, True, self.logger, True)
+        if conds is None:
+            return False
+        
+        outcond = DirectionCondition({'direction': 'out'})
+        if not outcond.initialize():
+            return False
+        conditions = [outcond, conds]
+
+        incond =  DirectionCondition({'direction': 'in'})
+        if not incond.initialize():
+            return False
+        
+        forward_mangler = make_mangler({
+            'type': 'DstIpFwdMangler',
+            'ip_forward_table': self.ip_fwd_tbl,
+            'inet.dst': LOOPBACK_IP,
+            'conditions': conditions,
+        })
+        if forward_mangler is None:
+            self.logger.error("Failed to make forward mangler")
+            return False
+
+        default_mangler = make_mangler({
+            'type': 'SrcIpFwdMangler',
+            'ip_forward_table': self.ip_fwd_tbl,
+            'conditions': [incond],
+        })
+        if default_mangler is None:
+            self.logger.error('Failed to make default mangler')
+            return False
+
+        monitor_config = {
+            'manglers': [forward_mangler, default_mangler],
+            'type': 'KextMonitor',
+        }
+
+        monitor = make_monitor(monitor_config, self.logger)
+        if monitor is None:
+            return False
+        
+        self.monitor = monitor
+        return True
+    
+    def start(self):
+        return self.monitor.start()
+    
+    def stop(self):
+        rc = self.monitor.stop()
+        self.monitor = None
+        return rc
