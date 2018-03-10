@@ -24,13 +24,36 @@ def make_mangler(config):
 
 
 class Mangler(BaseObject):
-    '''This is a generic interface for packet mangling'''    
-    def mangle(self, ip_packet):
+    '''This is a generic interface for packet mangling'''
+    def __init__(self, config):
+        super(Mangler, self).__init__(config)
+        self.conditions = list()
+    
+    def initialize(self):
+        if not super(Mangler, self).initialize():
+            return False
+        self.conditions = self.config.get('conditions', None)
+        if self.conditions is None:
+            return False
+        return True
+
+    def mangle(self, pkt):
+        if self.is_mangle(pkt):
+            return self.do_mangle(pkt.get('raw'))
+        return None
+
+    def do_mangle(self, raw):
         '''Mangle an ip packet and return a mangled IP object
-        @param ip_packet: scapy IP object
+        @param raw: Raw SCAPY object
         @return None on error, mangled IP Object on success
         '''
-        raise NotImplemented
+        return raw
+    
+    def is_mangle(self, pkt):
+        for cond in self.conditions:
+            if not cond.is_pass(pkt):
+                return False
+        return True
 
 
 class TPortMangler(Mangler):
@@ -38,7 +61,7 @@ class TPortMangler(Mangler):
     This class mangles network data at the transport layer. Currently, no
     changes are needed.
     '''
-    def mangle(self, ip_packet):
+    def do_mangle(self, ip_packet):
         if TCP in ip_packet:
             return self.mangle_tcp(ip_packet)
         if UDP in ip_packet:
@@ -77,14 +100,17 @@ class IPMangler(TPortMangler):
         self.REQUIRED_KEYS = []
 
     def initialize(self):
+        if not super(IPMangler, self).initialize():
+            return False
+            
         keys = self.config.keys()
         for k in self.REQUIRED_KEYS:
             if k not in keys:
                 return False
         return True
 
-    def mangle(self, ip_packet):
-        tport = super(IPMangler, self).mangle(ip_packet)
+    def do_mangle(self, ip_packet):
+        tport = super(IPMangler, self).do_mangle(ip_packet)
         if tport is None:
             return None
         newdst = self.config.get('inet.dst', ip_packet.dst)
@@ -99,9 +125,9 @@ class IPSwapMangler(IPMangler):
     a subclass of IPMangler. All configs supported by IPMangler are also
     supported.
     '''
-    def mangle(self, ip_packet):
+    def do_mangle(self, ip_packet):
         ip_packet.src, ip_packet.dst = ip_packet.dst, ip_packet.src
-        ipkt = super(IPSwapMangler, self).mangle(ip_packet)
+        ipkt = super(IPSwapMangler, self).do_mangle(ip_packet)
         return ipkt
 
 
@@ -125,9 +151,9 @@ class DlinkPacketMangler(IPMangler):
             return False
         return True
 
-    def mangle(self, ip_packet):
+    def do_mangle(self, ip_packet):
         macsrc = self.config.get('dlink.src')
         macdst = self.config.get('dlink.dst')
-        nipkt = super(DlinkPacketMangler, self).mangle(ip_packet)
+        nipkt = super(DlinkPacketMangler, self).do_mangle(ip_packet)
         dlink = Ether(src=macsrc, dst=macdst)/nipkt
         return dlink

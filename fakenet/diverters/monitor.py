@@ -14,7 +14,7 @@ from scapy.all import Ether, IP
 
 def make_monitor(config, logger=None):
     mtype = config.get('type')
-    elif mtype == 'LoopbackInterfaceMonitor':
+    if mtype == 'LoopbackInterfaceMonitor':
         monitor = LoopbackInterfaceMonitor(config)
     elif mtype == 'InterfaceMonitor':
         monitor = InterfaceMonitor(config)
@@ -38,10 +38,6 @@ class InterfaceMonitor(BaseObject):
     config = {
         'iface'     :    'en0',                 # name of an interface
         'forwarder' :    <an injector object>,
-        'conditions':   [
-            condition_object0,
-            condition_object1,
-        ]
     }
     '''
     START_TIMEOUT = 3
@@ -52,7 +48,6 @@ class InterfaceMonitor(BaseObject):
         self.is_running = False
         self.timeout = self.START_TIMEOUT
         self.iface = None
-        self.conditions = None
         self.forwarder = None
         self.mangler = None
 
@@ -76,7 +71,6 @@ class InterfaceMonitor(BaseObject):
             self.logger.error('Bad config: forwarder key required')
             return False
 
-        self.conditions = self.config.get('conditions', list())
         return True
 
     def start(self):
@@ -103,19 +97,6 @@ class InterfaceMonitor(BaseObject):
             return None
         return ipkt
 
-    def is_forward(self, ip_packet):
-        pkt = {'raw': ip_packet, 'meta': dict()}
-        for c in self.conditions:
-            if not c.is_pass(pkt):
-                return False
-        return True
-
-    def forward(self, ip_packet):
-        new_packet = self.mangler.mangle(ip_packet)
-        if new_packet is None:
-            return False
-        return self.forwarder.inject(new_packet)
-
     def _process(self, bytez):
         ip_packet = self.ip_packet_from_bytes(bytez)
         if ip_packet is None:
@@ -125,9 +106,11 @@ class InterfaceMonitor(BaseObject):
         if tport is None:
             return False
 
-        if not self.is_forward(ip_packet):
+        pkt = {'raw': ip_packet, 'meta': dict()}
+        newpkt = self.mangler.mangle(pkt)
+        if newpkt is None:
             return False
-        return self.forward(ip_packet)
+        return self.forwarder.inject(newpkt)
 
     def _monitor_thread(self, e):
         try:
