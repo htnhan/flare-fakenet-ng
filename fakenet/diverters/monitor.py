@@ -197,8 +197,9 @@ class InterfaceMonitor(BaseObject):
         return ipkt
 
     def is_forward(self, ip_packet):
+        pkt = {'raw': ip_packet, 'meta': dict()}
         for c in self.conditions:
-            if not c.is_pass(ip_packet):
+            if not c.is_pass(pkt):
                 return False
         return True
 

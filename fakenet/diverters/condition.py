@@ -13,7 +13,8 @@ KEY_PROCESS_BLACKLIST = 'processblacklist'
 KEY_PROCESS_WHITELIST = 'processwhitelist'
 
 
-def make_forwarder_conditions(listeners_config, is_divert, logger=None, ):
+def make_forwarder_conditions(listeners_config, is_divert, logger=None,
+                              isProcNameResolved=False):
     '''
     Make the conditions for a monitor/forwarder.
     @param  listeners_config        : listener configs, as a dictionary
@@ -36,7 +37,7 @@ def make_forwarder_conditions(listeners_config, is_divert, logger=None, ):
         blprocs = [_.strip() for _ in blprocs]
         if len(blprocs) > 0:
             # if diverting, the process name is blacklisted/ignored
-            pnames_cond = make_procnames_condition(blprocs, logger, is_divert)
+            pnames_cond = make_procnames_condition(blprocs, logger, is_divert, isProcNameResolved)
             if pnames_cond is None:
                 return None
             cond = AndCondition({'conditions': [port_condition, pnames_cond]})
@@ -77,7 +78,7 @@ def make_listener_port_condition(lconfig, logger=None, negate=False):
     return pcond
 
 
-def make_procnames_condition(proc_names, logger=None, negate=False):
+def make_procnames_condition(proc_names, logger=None, negate=False, isProcNameResolved=False):
     '''
     Make a ProcessNamesCondition with provided names.
     @param proc_names           : comma separated list of process names
@@ -89,7 +90,12 @@ def make_procnames_condition(proc_names, logger=None, negate=False):
     procs = [name.strip() for name in proc_names]
     if len(procs) <= 0:
         return None
-    cond = ProcessNamesCondition({'process_names': procs, 'not': negate})
+    if not isProcNameResolved:
+        cond = ProcessNamesCondition({'process_names': procs, 'not': negate})
+    else:
+        cond = ResolvedProcessNamesCondition({
+            'process_names': procs, 'not': negate,
+        })
     if not cond.initialize():
         logger.error('Failed to initialize ProcessNameCondition')
         return None
@@ -112,7 +118,7 @@ class Condition(BaseObject):
         self.negate = self.config.get('not', False)
         self.default = self.config.get('default_pass', False)
 
-    def is_pass(self, ip_packet):
+    def is_pass(self, pkt):
         raise NotImplementedError
 
 
@@ -144,30 +150,33 @@ class IpCondition(Condition):
         self.addrs = set(addrs)
         return True
 
-    def is_pass(self, ip_packet):
+    def is_pass(self, pkt):
         '''@override'''
+        raw, meta = pkt.get('raw'), pkt.get('meta')
         try:
-            rc = ip_packet.src in self.addrs or ip_packet.dst in self.addrs
+            rc = raw.src in self.addrs or raw.dst in self.addrs
         except:
             rc = self.default
         return rc if not self.negate else not rc
 
 
 class IpSrcCondition(IpCondition):
-    def is_pass(self, ip_packet):
+    def is_pass(self, pkt):
         '''@override'''
+        raw, meta = pkt.get('raw'), pkt.get('meta')
         try:
-            rc = ip_packet.src in self.addrs
+            rc = raw.src in self.addrs
         except:
             rc = self.default
         return rc if not self.negate else not rc
 
 
 class IpDstCondition(IpCondition):
-    def is_pass(self, ip_packet):
+    def is_pass(self, pkt):
         '''@override'''
+        raw, meta = pkt.get('raw'), pkt.get('meta')
         try:
-            rc = ip_packet.dst in self.addrs
+            rc = raw.dst in self.addrs
         except:
             rc = self.default
         return rc if not self.negate else not rc
@@ -198,18 +207,20 @@ class PortCondition(Condition):
         self.ports = set(ports)
         return True
 
-    def is_pass(self, ip_packet):
+    def is_pass(self, pkt):
         '''@override'''
-        tport = dutils.tport_from_ippacket(ip_packet)
+        raw, meta = pkt.get('raw'), pkt.get('meta')
+        tport = dutils.tport_from_ippacket(raw)
         if tport is None:
             return self.default
         rc = tport.dport in self.ports or tport.sport in self.ports
         return rc if not self.negate else not rc
 
 class DstPortCondition(PortCondition):
-    def is_pass(self, ip_packet):
+    def is_pass(self, pkt):
         '''@override'''
-        tport = dutils.tport_from_ippacket(ip_packet)
+        raw, meta = pkt.get('raw'), pkt.get('meta')
+        tport = dutils.tport_from_ippacket(raw)
         if tport is None:
             return self.default
         rc = tport.dport in self.ports
@@ -217,9 +228,10 @@ class DstPortCondition(PortCondition):
 
 
 class SrcPortCondition(PortCondition):
-    def is_pass(self, ip_packet):
+    def is_pass(self, pkt):
         '''@override'''
-        tport = dutils.tport_from_ippacket(ip_packet)
+        raw, meta = pkt.get('raw'), pkt.get('meta')
+        tport = dutils.tport_from_ippacket(raw)
         if tport is None:
             return self.default
         rc = tport.sport in self.ports
@@ -254,21 +266,21 @@ class CompoundCondition(Condition):
         return True
 
 class AndCondition(CompoundCondition):    
-    def is_pass(self, ip_packet):
+    def is_pass(self, pkt):
         '''@override'''
         rc = True
         for cond in self.conditions:
-            if not cond.is_pass(ip_packet):
+            if not cond.is_pass(pkt):
                 rc = False
                 break
         return rc if not self.negate else not rc
 
 
 class OrCondition(CompoundCondition):
-    def is_pass(self, ip_packet):
+    def is_pass(self, pkt):
         rc = False
         for cond in self.conditions:
-            if cond.is_pass(ip_packet):
+            if cond.is_pass(pkt):
                 rc = True
                 break
         return rc if not self.negate else not rc
@@ -276,17 +288,16 @@ class OrCondition(CompoundCondition):
 
 class MatchAllCondition(Condition):
     '''This class match all packts. No configuration is required'''
-    def is_pass(self, ip_packet):
+    def is_pass(self, pkt):
         '''@override'''
         return True
 
 
 class MatchNoneCondition(Condition):
     '''This class match none of the packets. No configuration is required'''
-    def is_pass(self, ip_packet):
+    def is_pass(self, pkt):
         '''@override'''
         return False
-
 
 
 class ProcessNamesCondition(Condition):
@@ -348,7 +359,7 @@ class ProcessNamesCondition(Condition):
     def _get_session_id(self, ip, tport):
         return '%s:%d_%s:%d' % (ip.src, tport.sport, ip.dst, tport.dport)
 
-    def is_pass(self, ip_packet):
+    def is_pass(self, pkt):
         '''
         This condition 'negate' option is handled differently from the rest, and
         therefore deserves some explanation. Others 'negate' option is check at
@@ -358,7 +369,8 @@ class ProcessNamesCondition(Condition):
 
         @override
         '''
-        tport = dutils.tport_from_ippacket(ip_packet)
+        raw, meta = pkt.get('raw'), pkt.get('meta')
+        tport = dutils.tport_from_ippacket(raw)
         is_tcp_init = self.is_tcp_init(tport) if tport is not None else False
         rc = False
         if is_tcp_init:
@@ -368,17 +380,17 @@ class ProcessNamesCondition(Condition):
                 self.tcpinitevent.wait(self.TCPINIT_WAIT_SECONDS)
 
             rc = False
-            idstr = self._get_init_id(ip_packet, tport)
+            idstr = self._get_init_id(raw, tport)
             md = dutils.gethash(idstr)
 
             if self.connecting.get(md, False):
                 del self.connecting[md]
-                newid = self._get_session_id(ip_packet, tport)
+                newid = self._get_session_id(raw, tport)
                 self.connected[dutils.gethash(newid)] = True
                 self.logger.debug('New connection: %s' % (newid,))
                 rc = True
         else:
-            idstr = self._get_session_id(ip_packet, tport)
+            idstr = self._get_session_id(raw, tport)
             md = dutils.gethash(idstr)
             rc = self.connected.get(md, False)
             if rc:
@@ -440,3 +452,32 @@ class ProcessNamesCondition(Condition):
     def __del__(self):
         self.dtrace_done = True
         self.dtrace.terminate()
+
+
+class ResolvedProcessNamesCondition(Condition):
+    def initialize(self):
+        if not super(ResolvedProcessNamesCondition, self).initialize():
+            return False
+        
+        self.names = self.config.get('process_names', list())
+        return True
+    
+    def is_pass(self, pkt):
+        raw, meta = pkt.get('raw'), pkt.get('meta')
+        name = meta.get('procname', None)
+        if name is None:
+            return False
+        
+        rc = name in self.names
+        return rc if self.negate else not rc
+
+class DirectionCondition(Condition):
+    def initialize(self):
+        self.direction = self.config.get('direction', 'in')
+        return True
+    
+    def is_pass(self, pkt):
+        raw, meta = pkt.get('raw'), pkt.get('meta')
+        if meta.get('direction', None) == self.direction:
+            return True
+        return False
