@@ -147,7 +147,7 @@ class DarwinUserlandDiverter(DarwinDiverter):
 
         # Actually initialize the loopback interface monitor
         monitor_config = {
-            'mangler': mangler,
+            'manglers': [mangler],
             'forwarder': forwarder,
             'iface': LOOPBACK_IFACE,
             'type': 'LoopbackInterfaceMonitor'
@@ -195,7 +195,7 @@ class DarwinUserlandDiverter(DarwinDiverter):
             return False
 
         monitor_config = {
-            'mangler': mangler,
+            'manglers': [mangler],
             'forwarder': forwarder,
             'iface': self.iface.get('iface'),
             'type': 'InterfaceMonitor',
@@ -248,7 +248,7 @@ class DarwinUserlandDiverter(DarwinDiverter):
             return False
 
         monitor_config = {
-            'mangler': mangler,
+            'manglers': [mangler],
             'forwarder': forwarder,
             'iface': LOOPBACK_IFACE,
             'type': 'LoopbackInterfaceMonitor',
@@ -292,7 +292,7 @@ class DarwinUserlandDiverter(DarwinDiverter):
             return False
 
         monitor_config = {
-            'mangler': mangler,
+            'manglers': [mangler],
             'forwarder': forwarder,
             'iface': LOOPBACK_IFACE,
             'type': 'LoopbackInterfaceMonitor',

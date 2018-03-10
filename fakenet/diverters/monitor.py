@@ -4,7 +4,6 @@ import pcapy
 import logging
 
 from diverters import BaseObject
-from diverters.mangler import make_mangler
 from diverters.injector import make_injector
 from diverters import condition
 from diverters import utils as dutils
@@ -49,7 +48,7 @@ class InterfaceMonitor(BaseObject):
         self.timeout = self.START_TIMEOUT
         self.iface = None
         self.forwarder = None
-        self.mangler = None
+        self.manglers = list()
 
     def initialize(self):
         if not super(InterfaceMonitor, self).initialize():
@@ -60,10 +59,9 @@ class InterfaceMonitor(BaseObject):
             self.logger.error('Bad config: iface key required')
             return False
 
-        #self.mangler = make_mangler(self.config.get('mangler', dict()))
-        self.mangler = self.config.get('mangler', None)
-        if self.mangler is None:
-            self.logger.error('Bad mangler config')
+        self.manglers = self.config.get('manglers', None)
+        if self.manglers is None:
+            self.logger.error('Bad manglers config')
             return False
 
         self.forwarder = self.config.get('forwarder', None)
@@ -97,6 +95,13 @@ class InterfaceMonitor(BaseObject):
             return None
         return ipkt
 
+    def mangle(self, pkt):
+        for mangler in self.manglers:
+            newpkt = mangler.mangle(pkt)
+            if newpkt is not None:
+                return newpkt
+        return None
+
     def _process(self, bytez):
         ip_packet = self.ip_packet_from_bytes(bytez)
         if ip_packet is None:
@@ -107,7 +112,7 @@ class InterfaceMonitor(BaseObject):
             return False
 
         pkt = {'raw': ip_packet, 'meta': dict()}
-        newpkt = self.mangler.mangle(pkt)
+        newpkt = self.mangle(pkt)
         if newpkt is None:
             return False
         return self.forwarder.inject(newpkt)
